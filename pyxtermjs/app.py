@@ -12,12 +12,14 @@ import fcntl
 import shlex
 import logging
 import sys
+import signal
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 __version__ = "0.5.0.2"
 
-app = Flask(__name__, template_folder=".", static_folder=".", static_url_path="")
+app = Flask(__name__, template_folder=".",
+            static_folder=".", static_url_path="")
 app.config["SECRET_KEY"] = "secret!"
 app.config["fd"] = None
 app.config["child_pid"] = None
@@ -36,12 +38,14 @@ def read_and_forward_pty_output():
         socketio.sleep(0.01)
         if app.config["fd"]:
             timeout_sec = 0
-            (data_ready, _, _) = select.select([app.config["fd"]], [], [], timeout_sec)
+            (data_ready, _, _) = select.select(
+                [app.config["fd"]], [], [], timeout_sec)
             if data_ready:
                 output = os.read(app.config["fd"], max_read_bytes).decode(
                     errors="ignore"
                 )
-                socketio.emit("pty-output", {"output": output}, namespace="/pty")
+                socketio.emit(
+                    "pty-output", {"output": output}, namespace="/pty")
 
 
 @app.route("/")
@@ -71,33 +75,62 @@ def connect():
     """new client connected"""
     logging.info("new client connected")
     if app.config["child_pid"]:
-        # already started child process, don't start another
-        return
+        # Terminate existing child process
+        try:
+            os.kill(app.config["child_pid"], signal.SIGTERM)
+        except OSError as e:
+            logging.error(f"Error terminating process: {e}")
+        app.config["child_pid"] = None
+        app.config["fd"] = None
 
     # create child process attached to a pty we can read from and write to
     (child_pid, fd) = pty.fork()
     if child_pid == 0:
         # this is the child process fork.
-        # anything printed here will show up in the pty, including the output
-        # of this subprocess
         subprocess.run(app.config["cmd"])
     else:
         # this is the parent process fork.
-        # store child fd and pid
         app.config["fd"] = fd
         app.config["child_pid"] = child_pid
-        set_winsize(fd, 50, 50)
+        set_winsize(fd, 50, 50)  # Adjust terminal window size if needed
         cmd = " ".join(shlex.quote(c) for c in app.config["cmd"])
-        # logging/print statements must go after this because... I have no idea why
-        # but if they come before the background task never starts
-        socketio.start_background_task(target=read_and_forward_pty_output)
-
-        logging.info("child pid is " + child_pid)
+        # Logging statements
+        logging.info(f"child pid is {child_pid}")
         logging.info(
-            f"starting background task with command `{cmd}` to continously read "
-            "and forward pty output to client"
-        )
+            f"starting background task with command `{cmd}` to continuously read and forward pty output to client")
         logging.info("task started")
+        socketio.start_background_task(target=read_and_forward_pty_output)
+# def connect():
+#     """new client connected"""
+#     logging.info("new client connected")
+#     if app.config["child_pid"]:
+#         # already started child process, don't start another
+#         return
+
+#     # create child process attached to a pty we can read from and write to
+#     (child_pid, fd) = pty.fork()
+#     if child_pid == 0:
+#         # this is the child process fork.
+#         # anything printed here will show up in the pty, including the output
+#         # of this subprocess
+#         subprocess.run(app.config["cmd"])
+#     else:
+#         # this is the parent process fork.
+#         # store child fd and pid
+#         app.config["fd"] = fd
+#         app.config["child_pid"] = child_pid
+#         set_winsize(fd, 50, 50)
+#         cmd = " ".join(shlex.quote(c) for c in app.config["cmd"])
+#         # logging/print statements must go after this because... I have no idea why
+#         # but if they come before the background task never starts
+#         socketio.start_background_task(target=read_and_forward_pty_output)
+
+#         logging.info("child pid is " + child_pid)
+#         logging.info(
+#             f"starting background task with command `{cmd}` to continously read "
+#             "and forward pty output to client"
+#         )
+#         logging.info("task started")
 
 
 def main():
@@ -116,8 +149,10 @@ def main():
         default="127.0.0.1",
         help="host to run server on (use 0.0.0.0 to allow access from other hosts)",
     )
-    parser.add_argument("--debug", action="store_true", help="debug the server")
-    parser.add_argument("--version", action="store_true", help="print version and exit")
+    parser.add_argument("--debug", action="store_true",
+                        help="debug the server")
+    parser.add_argument("--version", action="store_true",
+                        help="print version and exit")
     parser.add_argument(
         "--command", default="bash", help="Command to run in the terminal"
     )
